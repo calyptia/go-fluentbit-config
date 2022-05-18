@@ -90,15 +90,6 @@ func (vs Values) ToString() string {
 	return strings.Join(vals, " ")
 }
 
-func (fields Fields) hasField(name string) bool {
-	for _, field := range fields {
-		if strings.EqualFold(name, field.Key) {
-			return true
-		}
-	}
-	return false
-}
-
 func (a *Value) Equals(b *Value) bool {
 	if a.JsonObject != nil {
 		if b.JsonObject == nil {
@@ -359,12 +350,6 @@ func (value *Value) dumpValueINI(ini *bytes.Buffer) error {
 		ini.Write([]byte(fmt.Sprintf("%d", int(*value.Number))))
 	case value.Float != nil:
 		ini.Write([]byte(fmt.Sprintf("%0.6f", *value.Float)))
-	case value.List != nil:
-		//for _, v := range value.List {
-		//if err := v.dumpValueINI(ini); err != nil {
-		//	return err
-		//}
-		//}
 	}
 	return nil
 }
@@ -378,15 +363,46 @@ func (values Values) dumpValueINI(ini *bytes.Buffer) error {
 	return nil
 }
 
-func (f *Field) dumpFieldINI(ini *bytes.Buffer) error {
-	ini.Write([]byte(fmt.Sprintf("    %s ", f.Key)))
-	if err := f.Values.dumpValueINI(ini); err != nil {
-		return err
+func (f Field) hasList() bool {
+	for _, val := range f.Values {
+		if len(val.List) > 0 {
+			return true
+		}
 	}
-	if f.End != nil {
-		ini.Write([]byte(*f.End))
+	return false
+}
+
+func (f Field) getListValues() ([]string, error) {
+	vals := make([]string, 0)
+	for _, val := range f.Values {
+		if len(val.List) <= 0 {
+			return vals, fmt.Errorf("non list value in lists")
+		}
+		vals = append(vals, val.List...)
+	}
+	return vals, nil
+}
+
+func (f *Field) dumpFieldINI(ini *bytes.Buffer) error {
+	if !f.hasList() {
+		ini.Write([]byte(fmt.Sprintf("    %s ", f.Key)))
+		if err := f.Values.dumpValueINI(ini); err != nil {
+			return err
+		}
+		if f.End != nil {
+			ini.Write([]byte(*f.End))
+		} else {
+			ini.Write([]byte("\n"))
+		}
 	} else {
-		ini.Write([]byte("\n"))
+		vals, err := f.getListValues()
+		if err != nil {
+			return err
+		}
+
+		for _, val := range vals {
+			ini.Write([]byte(fmt.Sprintf("    %s %s\n", f.Key, val)))
+		}
 	}
 	return nil
 }
@@ -452,6 +468,34 @@ func ParseINI(data []byte) (*Config, error) {
 
 type Fields []Field
 
+func (fields Fields) hasField(name string) bool {
+	for _, field := range fields {
+		if strings.EqualFold(name, field.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+func (fields Fields) countField(name string) int {
+	cnt := 0
+	for _, field := range fields {
+		if strings.EqualFold(name, field.Key) {
+			cnt++
+		}
+	}
+	return cnt
+}
+
+func (fields Fields) findField(name string) *Field {
+	for idx, field := range fields {
+		if strings.EqualFold(name, field.Key) {
+			return &fields[idx]
+		}
+	}
+	return nil
+}
+
 func (fs *Fields) UnmarshalYAML(unmarshal func(v interface{}) error) error {
 	kv := make(map[string]interface{})
 	if err := unmarshal(&kv); err != nil {
@@ -496,8 +540,15 @@ func (fs *Fields) UnmarshalYAML(unmarshal func(v interface{}) error) error {
 					Bool: &t,
 				}},
 			})
+		case []string:
+			fields = append(fields, Field{
+				Key: k,
+				Values: []Value{{
+					List: t,
+				}},
+			})
 		default:
-			return fmt.Errorf("unknown type: %+v: %+v", t, v)
+			return fmt.Errorf("unknown marshal type: %+v: %+v", t, v)
 		}
 	}
 	*fs = fields
@@ -524,6 +575,8 @@ func (fs Fields) MarshalYAML() (interface{}, error) {
 				fmap[field.Key] = *field.Values[0].Number
 			case field.Values[0].Float != nil:
 				fmap[field.Key] = *field.Values[0].Float
+			case len(field.Values[0].List) > 0:
+				fmap[field.Key] = field.Values[0].List
 			default:
 				return nil, fmt.Errorf("unknown type: %+v", field)
 			}
@@ -534,6 +587,54 @@ func (fs Fields) MarshalYAML() (interface{}, error) {
 	return fmap, nil
 }
 
+func (v Value) MarshalJSON() ([]byte, error) {
+	val := bytes.NewBuffer([]byte(""))
+
+	switch true {
+	case v.String != nil:
+		val.Write([]byte(*v.String))
+	case v.DateTime != nil:
+		val.Write([]byte(*v.DateTime))
+	case v.Date != nil:
+		val.Write([]byte(*v.Date))
+	case v.Time != nil:
+		val.Write([]byte(*v.Time))
+	case v.Bool != nil:
+		if *v.Bool {
+			val.Write([]byte("true"))
+		} else {
+			val.Write([]byte("false"))
+		}
+	case v.Number != nil:
+		val.Write([]byte(fmt.Sprintf("%d", int(*v.Number))))
+	case v.Float != nil:
+		val.Write([]byte(fmt.Sprintf("%0.6f", *v.Float)))
+	case v.JsonObject != nil:
+		val.Write([]byte(strconv.Quote(*v.JsonObject)))
+	case v.TemplateVariable != nil:
+		val.Write([]byte(strconv.Quote(*v.TemplateVariable)))
+	case v.Address != nil:
+		val.Write([]byte(strconv.Quote(*v.Address)))
+	case v.Unit != nil:
+		val.Write([]byte(strconv.Quote(*v.Unit)))
+	case v.List != nil:
+		val.Write([]byte("["))
+		for im, m := range v.List {
+			val.Write([]byte(fmt.Sprintf("\"%s\"", m)))
+			if (im < len(v.List)-1) {
+				val.Write([]byte(","))
+			}
+		}
+		val.Write([]byte("]"))
+	default:
+		return nil, fmt.Errorf("unknown typezzz")
+	}
+
+	return val.Bytes(), nil
+}
+
+// @TODO: bunch together duplicate field Keys ...
+// we have to do this without using a map...
 func (fs Fields) MarshalJSON() ([]byte, error) {
 	bfields := bytes.NewBuffer([]byte(""))
 	bfields.Write([]byte("{"))
@@ -546,57 +647,24 @@ func (fs Fields) MarshalJSON() ([]byte, error) {
 		if len(field.Values) == 1 {
 			switch true {
 			case field.Values[0].String != nil:
-				if isstr {
-					val.Write([]byte(" "))
-				} else {
-					isstr = true
-				}
-				val.Write([]byte(*field.Values[0].String))
+				fallthrough
 			case field.Values[0].DateTime != nil:
-				if isstr {
-					val.Write([]byte(" "))
-				} else {
-					isstr = true
-				}
-				val.Write([]byte(*field.Values[0].DateTime))
+				fallthrough
 			case field.Values[0].Date != nil:
-				if isstr {
-					val.Write([]byte(" "))
-				} else {
-					isstr = true
-				}
-				val.Write([]byte(*field.Values[0].Date))
+				fallthrough
 			case field.Values[0].Time != nil:
 				if isstr {
 					val.Write([]byte(" "))
 				} else {
 					isstr = true
 				}
-				val.Write([]byte(*field.Values[0].Time))
-			case field.Values[0].Bool != nil:
-				if *field.Values[0].Bool {
-					val.Reset()
-					val.Write([]byte("true"))
-				} else {
-					val.Reset()
-					val.Write([]byte("false"))
-				}
-			case field.Values[0].Number != nil:
-				val.Write([]byte(fmt.Sprintf("%d", int(*field.Values[0].Number))))
-			case field.Values[0].Float != nil:
-				val.Write([]byte(fmt.Sprintf("%0.6f", *field.Values[0].Float)))
-			case field.Values[0].JsonObject != nil:
-				val.Write([]byte(strconv.Quote(*field.Values[0].JsonObject)))
-			case field.Values[0].TemplateVariable != nil:
-				val.Write([]byte(strconv.Quote(*field.Values[0].TemplateVariable)))
-			case field.Values[0].Address != nil:
-				val.Write([]byte(strconv.Quote(*field.Values[0].Address)))
-			case field.Values[0].Unit != nil:
-				val.Write([]byte(strconv.Quote(*field.Values[0].Unit)))
-			default:
-				return nil, fmt.Errorf("unknown typed: %+v", field)
 			}
-		} else {
+			valbuf, err := field.Values[0].MarshalJSON()
+			if err != nil {
+				return nil, fmt.Errorf("%v: %w", field, err)
+			}
+			val.Write(valbuf)
+		} else if len(field.Values) > 1 {
 			isstr = true
 			val.Write([]byte(field.Values.ToString()))
 		}
@@ -678,6 +746,17 @@ func (fs *Fields) UnmarshalJSON(b []byte) error {
 					Bool: &t,
 				}},
 			})
+		case []interface{}:
+			strs := make([]string, 0)
+			for _, v := range t {
+				strs = append(strs, v.(string))
+			}
+			fields = append(fields, Field{
+				Key: k.(string),
+				Values: []Value{{
+					List: strs,
+				}},
+			})
 		default:
 			return fmt.Errorf("unknown type: %+v", v)
 		}
@@ -740,10 +819,29 @@ func (cfg *Config) dumpYamlGrammar() *yamlGrammar {
 			sectionmap[sectionName] = make(Fields, 0)
 
 			for _, field := range section.Fields {
-				sectionmap[sectionName] = append(sectionmap[sectionName], Field{
-					Key:    field.Key,
-					Values: field.Values,
-				})
+				if Fields(section.Fields).countField(field.Key) == 1 {
+					sectionmap[sectionName] = append(sectionmap[sectionName], Field{
+						Key:    field.Key,
+						Values: field.Values,
+					})
+				} else {
+					if sectionmap[sectionName].hasField(field.Key) {
+						f := Fields(section.Fields).findField(field.Key)
+						f.Values[0].List = append(
+							f.Values[0].List,
+							field.Values.ToString(),
+						)
+					} else {
+						sectionmap[sectionName] = append(sectionmap[sectionName], Field{
+							Key: field.Key,
+							Values: []Value{{
+								List: []string{
+									field.Values.ToString(),
+								}},
+							},
+						})
+					}
+				}
 			}
 
 			// deal with the weird quirk in the fluent-bit yaml

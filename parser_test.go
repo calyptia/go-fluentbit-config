@@ -875,7 +875,7 @@ func TestJSONtoINI(t *testing.T) {
 
 			if !bytes.Equal(ini, expected) {
 				t.Errorf("INI does not match: \n'%s' => \n'%s'\n",
-					string(ini), string(expected))
+					string(expected), string(ini))
 				return
 			}
 		})
